@@ -1,65 +1,81 @@
-﻿@page "/"
+@page "/"
+@using System.Security.Cryptography
+@using DSpico_firmware_patcher.DSRomEncryptor
 
-<PageTitle>DSpico WRFUxxed firmware patcher</PageTitle>
+<PageTitle>DSpico Firmware Creator</PageTitle>
 
-<h1>DSpico WRFUxxed firmware patcher</h1>
+<h1>DSpico Firmware Creator</h1>
 
 <p>Firmware build date: @buildDate</p>
 <p>Firmware commit: @firmwareCommit</p>
 <p>Bootloader commit: @bootloaderCommit</p>
-<p>WRFUxxed commit: @wrfuxxedCommit</p>
 
-<h2>Load WRFU Tester v0.60 (Build Date 20080821) (SHA-1 hash 2d65fb7a0c62a4f08954b98c95f42b804fccfd26)</h2>
-<InputFile OnChange="LoadFile" />
+<hr />
 
-<div>@status</div>
+<h2>Firmware Creation Options</h2>
+<div style="margin-bottom: 20px;">
+    <label>
+        <input type="radio" name="mode" value="extract" checked="@(patchMode == "extract")" @onchange="@(() => patchMode = "extract")" />
+        Extract banner from retail ROM
+    </label>
+    <br />
+    <label>
+        <input type="radio" name="mode" value="custom" checked="@(patchMode == "custom")" @onchange="@(() => patchMode = "custom")" disabled />
+        Enter title/icon manually (To be implemented)
+    </label>
+</div>
 
-<a href="https://github.com/Asaduji/DSpico-firmware-patcher">
-    <img class="gh-logo" src="/DSpico-firmware-patcher/img/github-logo.svg" />
+@if (patchMode == "extract")
+{
+    <h3>Please select a valid Nintendo DS ROM file (.nds)</h3>
+    <InputFile OnChange="ProcessRomFile" />
+}
+
+<div style="margin-top: 20px; font-weight: bold; color: blue;">@status</div>
+
+<a href="https://github.com/mighty-Jun/DSpico-firmware-patcher">
+    <img class="gh-logo" src="/DSpico-firmware-patcher/img/github-logo.svg" style="margin-top: 30px;" />
 </a>
 
 @inject HttpClient Http
 @inject IJSRuntime JS
+
 @code {
-    private const string VALID_WRFU_HASH = "2d65fb7a0c62a4f08954b98c95f42b804fccfd26";
-    private const int WRFU_SIZE = 1033216;
-    private const string FIRMWARE_URL = "https://asaduji.github.io/DSpico-auto-firmware-builder/DSpico.uf2";
-    private const string HASHES_URL = "https://asaduji.github.io/DSpico-auto-firmware-builder/last_shas.txt";
-    private const string BUILD_DATE_URL = "https://asaduji.github.io/DSpico-auto-firmware-builder/build_date.txt";
+    // UI State
+    private string patchMode = "extract";
     private string status = string.Empty;
+    
+    // Version Info
     private string buildDate = "Unknown";
     private string firmwareCommit = "Unknown";
     private string bootloaderCommit = "Unknown";
-    private string wrfuxxedCommit = "Unknown";
+
+    // Resource URLs
+    private const string ARM9_ELF_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/arm9.elf";
+    private const string ARM7_ELF_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/arm7.elf";
+    private const string DSPICO_DLDI_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/DSpico.dldi";
+    private const string FIRMWARE_1_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/DSpico1.uf2"; 
+    private const string FIRMWARE_2_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/DSpico2.uf2"; 
+    private const string HASHES_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/last_shas.txt";
+    private const string BUILD_DATE_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/build_date.txt";
+    private const string NTR_BLOWFISH_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/encr_data.bin";
+    private const string TWL_BLOWFISH_URL = "https://mighty-jun.github.io/DSpico-auto-firmware-builder/dsi_encr_data.bin";
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             var rawHashes = await Http.GetStringAsync(HASHES_URL);
-
             var hashes = ParseRawHashes(rawHashes);
 
-            if (hashes.ContainsKey("FIRMWARE"))
-            {
-                firmwareCommit = hashes["FIRMWARE"];
-            }
-
-            if (hashes.ContainsKey("BOOTLOADER"))
-            {
-                bootloaderCommit = hashes["BOOTLOADER"];
-            }
-
-            if (hashes.ContainsKey("WRFUXXED"))
-            {
-                wrfuxxedCommit = hashes["WRFUXXED"];
-            }
+            if (hashes.ContainsKey("FIRMWARE")) firmwareCommit = hashes["FIRMWARE"];
+            if (hashes.ContainsKey("BOOTLOADER")) bootloaderCommit = hashes["BOOTLOADER"];
 
             buildDate = await Http.GetStringAsync(BUILD_DATE_URL);
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex);
+            Console.WriteLine("Failed to load version info: " + ex.Message);
         }
     }
 
@@ -67,102 +83,99 @@
     {
         var dictionary = new Dictionary<string, string>();
         using var stringReader = new StringReader(rawHashes);
-
         var line = stringReader.ReadLine();
-
         while (line is not null)
         {
-            line = line.Trim();
-
             if (line.Contains('='))
             {
                 var parts = line.Split('=');
-
-                dictionary.TryAdd(parts[0], parts[1]);
+                dictionary.TryAdd(parts[0].Trim(), parts[1].Trim());
             }
-
             line = stringReader.ReadLine();
         }
-
         return dictionary;
     }
 
-    private async Task LoadFile(InputFileChangeEventArgs e)
+    private async Task ProcessRomFile(InputFileChangeEventArgs e)
     {
         try
         {
-            if (e.File.Size != WRFU_SIZE)
-            {
-                SetStatus($"Invalid size for WRFU Tester 0.60, make sure file SHA-1 is {VALID_WRFU_HASH}");
-
-                return;
-            }
-
-            SetStatus("Loading file...");
-
+            SetStatus("1/6: Loading ROM file into browser memory...");
             var file = e.File;
-
-            using var stream = file.OpenReadStream(WRFU_SIZE);
-            using var reader = new StreamReader(stream);
+            
+            using var stream = file.OpenReadStream(512 * 1024 * 1024);
             using var ms = new MemoryStream();
-
             await stream.CopyToAsync(ms);
+            byte[] inputRomBytes = ms.ToArray();
 
-            ms.Position = 0;
+            SetStatus("2/6: Extracting banner (banner.bin) via ndstool.wasm...");
+            byte[] bannerBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.extractBanner", file.Name, inputRomBytes);
 
-            var wrfu = ms.ToArray();
-
-            using var sha = SHA1.Create();
-
-            SetStatus("Hashing...");
-
-            var hashBytes = await sha.ComputeHashAsync(ms);
-
-            var wrfuHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
-
-            Console.WriteLine($"WRFU is {wrfu.Length} bytes, SHA-1 {wrfuHash}");
-
-            if (wrfuHash != VALID_WRFU_HASH)
+            if (bannerBytes == null || bannerBytes.Length == 0)
             {
-                SetStatus("Invalid WRFU rom!");
-
+                SetStatus("Error: Failed to extract banner from the ROM file.");
                 return;
             }
 
-            SetStatus("Valid WRFU rom provided! Patching...");
+            await DownloadBytes("extracted_banner.bin", bannerBytes);
 
-            var firmware = await Http.GetByteArrayAsync(FIRMWARE_URL);
+            SetStatus("3/6: Downloading base files (arm7, arm9) and building bootloader.nds...");
+            byte[] arm7Bytes = await Http.GetByteArrayAsync(ARM7_ELF_URL);
+            byte[] arm9Bytes = await Http.GetByteArrayAsync(ARM9_ELF_URL);
+            byte[] bootloaderBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.buildBootloader", bannerBytes, arm7Bytes, arm9Bytes);
+            await DownloadBytes("bootloader_raw.nds", bootloaderBytes);
+
+            SetStatus("4/6: Downloading DSpico.dldi and applying DLDI patch...");
+            byte[] dldiBytes = await Http.GetByteArrayAsync(DSPICO_DLDI_URL);
+            byte[] dldiPatchedBootloaderBytes = await JS.InvokeAsync<byte[]>(
+                "DldiBridge.applyPatch", 
+                dldiBytes, 
+                bootloaderBytes
+            );
+
+            SetStatus("5/6: Encrypting final default.nds via DSRomEncryptor...");
+            byte[] ntrKey = await Http.GetByteArrayAsync(NTR_BLOWFISH_URL);
+            byte[] twlKey = await Http.GetByteArrayAsync(TWL_BLOWFISH_URL);
+
+            byte[] defaultNdsBytes = RomEncryptorService.EncryptRom(dldiPatchedBootloaderBytes, ntrKey, twlKey);
+
+            await DownloadBytes("default_final.nds", defaultNdsBytes);
+
+            SetStatus($"6/6: Patching firmware... (Generated NDS size: {defaultNdsBytes.Length} bytes)");
+            string targetUf2Url = (defaultNdsBytes.Length <= 82432) ? FIRMWARE_1_URL : FIRMWARE_2_URL;
+            byte[] baseFirmwareBytes = await Http.GetByteArrayAsync(targetUf2Url);
 
             var uf2Reader = new UF2Reader();
-            uf2Reader.ReadFromBuffer(firmware);
+            uf2Reader.ReadFromBuffer(baseFirmwareBytes);
             var uf2Patcher = new UF2Patcher(uf2Reader);
 
-            //Look for the dummy file
-            uf2Patcher.PatchWRFU(wrfu);
-
+            uf2Patcher.PatchDefault(defaultNdsBytes); 
             var patchedFirmware = uf2Reader.ToBuffer();
 
+            SetStatus("Done! Starting download of the patched firmware.");
             await JS.InvokeVoidAsync(
                 "downloadFileFromBytes",
-                "DSpico_wrfuxxed.uf2",
+                "DSpico_custom.uf2",
                 "application/octet-stream",
                  patchedFirmware
             );
-
-            SetStatus("Done");
         }
         catch(Exception ex)
         {
             Console.WriteLine(ex);
-
-            SetStatus(ex.ToString());
+            SetStatus("Error occurred: " + ex.Message);
         }
     }
 
     private void SetStatus(string newStatus)
     {
         status = newStatus;
-
         StateHasChanged();
+    }
+
+    private async Task DownloadBytes(string fileName, byte[] data)
+    {
+        if (data == null || data.Length == 0) return;
+        await JS.InvokeVoidAsync("downloadFileFromBytes", fileName, "application/octet-stream", data);
     }
 }

@@ -9,6 +9,53 @@
             _uf2Reader = uf2Reader;
         }
 
+        public void PatchDefault(byte[] ndsRom)
+        {
+            var currentBlockOffset = 0;
+            int currentBlockIndex = 0;
+            var currentBlock = _uf2Reader.Blocks[0];
+
+            for (var i = 0; i < _uf2Reader.Blocks.Count; i++)
+            {
+                currentBlock = _uf2Reader.Blocks[i];
+                currentBlockOffset = GetBlockPatternOffset(currentBlock);
+
+                if (currentBlockOffset >= 0)
+                {
+                    currentBlockIndex = i;
+                    break;
+                }
+            }
+
+            if (currentBlockOffset == -1)
+            {
+                throw new Exception("Could not find dummy pattern.");
+            }
+
+            var romOffset = 0;
+
+            while (romOffset < ndsRom.Length)
+            {
+                if (currentBlockOffset >= currentBlock.DataSize)
+                {
+                    currentBlockIndex++;
+
+                    if (currentBlockIndex >= _uf2Reader.Blocks.Count)
+                    {
+                        throw new Exception($"UF2 base firmware has insufficient dummy space! (Patch ROM size: {ndsRom.Length} bytes)");
+                    }
+
+                    currentBlock = _uf2Reader.Blocks[currentBlockIndex];
+                    currentBlockOffset = 0;
+                }
+
+                currentBlock.Data[currentBlockOffset] = ndsRom[romOffset];
+
+                ++currentBlockOffset;
+                ++romOffset;
+            }
+        }
+
         public void PatchWRFU(byte[] wrfuRom)
         {
             var currentBlockOffset = 0;
@@ -54,30 +101,35 @@
         {
             for (var i = 0; i < block.DataSize; i++)
             {
+                bool isMatch = true;
+
                 for (var j = 0; j < _dummyPattern.Length; j++)
                 {
-                    if (block.Data[i + j] != _dummyPattern[j])
-                    {
-                        break;
-                    }
+                    int currentOffset = i + j;
 
-                    // Pattern could be split between 2 blocks, we need to take that into account
-                    // Check next block if pattern is matching but we're at the end of the block
-                    if (j == _dummyPattern.Length - 1)
+                    if (currentOffset < block.DataSize)
+                    {
+                        if (block.Data[currentOffset] != _dummyPattern[j])
+                        {
+                            isMatch = false;
+                            break;
+                        }
+                    }
+                    else
                     {
                         var nextBlock = _uf2Reader.Blocks.FirstOrDefault(x => x.Address == block.Address + block.DataSize);
 
-                        if (nextBlock is not null && BlockStartsWithPattern(nextBlock, j))
+                        if (nextBlock == null || nextBlock.Data[currentOffset - block.DataSize] != _dummyPattern[j])
                         {
-                            return i;
+                            isMatch = false;
+                            break;
                         }
-
                     }
+                }
 
-                    if (j >= _dummyPattern.Length - 1)
-                    {
-                        return i;
-                    }
+                if (isMatch)
+                {
+                    return i;
                 }
             }
 
