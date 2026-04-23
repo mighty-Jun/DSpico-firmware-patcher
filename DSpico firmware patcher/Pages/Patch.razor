@@ -20,21 +20,62 @@
     </label>
     <br />
     <label>
-        <input type="radio" name="mode" value="custom" checked="@(patchMode == "custom")" @onchange="@(() => patchMode = "custom")" disabled />
-        Enter title/icon manually (To be implemented)
+        <input type="radio" name="mode" value="custom" checked="@(patchMode == "custom")" @onchange="@(() => patchMode = "custom")" />
+        Enter title/icon manually
     </label>
 </div>
+
+@if (patchMode == "custom")
+{
+    <div class="custom-banner-options" style="margin-top: 15px; padding: 20px; border: 1px solid #dee2e6; border-radius: 8px; background-color: #f8f9fa;">
+        <h4 style="margin-bottom: 15px;">Custom Banner Settings</h4>
+
+        <div style="margin-bottom: 15px;">
+            <label style="font-weight: bold; display: block; margin-bottom: 5px;">Game Title</label>
+            <input type="text" class="form-control" @bind="customTitle" placeholder="e.g., DSpico" maxlength="128" />
+            <small class="text-muted">This text will be displayed on the first line of the Nintendo DS menu.</small>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label style="font-weight: bold; display: block; margin-bottom: 5px;">Game Subtitle</label>
+            <input type="text" class="form-control" @bind="customSubtitle" placeholder="e.g., flashcard" maxlength="128" />
+            <small class="text-muted">(Optional) If provided, this text will be displayed on the second line of the Nintendo DS menu.</small>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label style="font-weight: bold; display: block; margin-bottom: 5px;">Author</label>
+            <input type="text" class="form-control" @bind="customAuthor" placeholder="e.g., LNH Team" maxlength="128" />
+            <small class="text-muted">This text will be displayed on the last line of the Nintendo DS menu.</small>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+            <label style="font-weight: bold; display: block; margin-bottom: 5px;">Custom Icon (.bmp)</label>
+            <InputFile OnChange="LoadCustomIcon" class="form-control" accept=".bmp" />
+            <small class="text-muted">Upload a 32X32 .bmp file.</small>
+        </div>
+
+        <button class="btn btn-primary" style="margin-top: 15px; width: 100%; padding: 10px; font-weight: bold;" @onclick="ProcessRomFile">
+            Build
+        </button>
+    </div>
+}
 
 @if (patchMode == "extract")
 {
     <h3>Please select a valid Nintendo DS ROM file (.nds)</h3>
-    <InputFile OnChange="ProcessRomFile" />
+    <InputFile OnChange="LoadRomFile" />
 }
 
 <div style="margin-top: 20px; font-weight: bold; color: blue;">@status</div>
 
+@if (progressPercent > 0)
+{
+    <label for="patch">Patch progress</label>
+    <progress id="patch" max="100" value="@(progressPercent)">@(progressPercent)%</progress>
+}
+<br />
 <a href="https://github.com/mighty-Jun/DSpico-firmware-patcher">
-    <img class="gh-logo" src="/DSpico-firmware-patcher/img/github-logo.svg" style="margin-top: 30px;" />
+    <img class="gh-logo" src="/img/github-logo.svg" style="margin-top: 30px;" />
 </a>
 
 @inject HttpClient Http
@@ -43,8 +84,17 @@
 @code {
     // UI State
     private string patchMode = "extract";
+    private string customTitle { get; set; } = "DSpico";
+    private string customSubtitle { get; set; } = "";
+    private string customAuthor { get; set; } = "LNH Team";
+    private byte[]? customIconBytes { get; set; } = null;
+    private byte[]? inputRomBytes { get; set; } = null;
+    private byte[]? bannerBytes { get; set; } = null;
+    private int progressPercent = 0;
+    private int TOTAL_STEPS = 6;
+    private int current_step = 1;
     private string status = string.Empty;
-    
+
     // Version Info
     private string buildDate = "Unknown";
     private string firmwareCommit = "Unknown";
@@ -96,20 +146,42 @@
         return dictionary;
     }
 
-    private async Task ProcessRomFile(InputFileChangeEventArgs e)
+    private async Task LoadRomFile(InputFileChangeEventArgs e)
     {
-        try
+        current_step = 1;
+        TOTAL_STEPS = 7;
+        await UpdateProgress(current_step++, "Loading ROM file into browser memory...");
+        var file = e.File;
+        if (file != null)
         {
-            SetStatus("1/6: Loading ROM file into browser memory...");
-            var file = e.File;
-            
-            using var stream = file.OpenReadStream(512 * 1024 * 1024);
-            using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms);
-            byte[] inputRomBytes = ms.ToArray();
+            try
+            {
+                using var stream = file.OpenReadStream(1024L * 1024L * 1024L);
+                int chunkSize = 4 * 1024 * 1024;
+                int bufferSize = (int)Math.Min(chunkSize, file.Size);
+                byte[] chunkBytes = new byte[bufferSize];
 
-            SetStatus("2/6: Extracting banner (banner.bin) via ndstool.wasm...");
-            byte[] bannerBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.extractBanner", file.Name, inputRomBytes);
+                int bytesRead = 0;
+                while (bytesRead < bufferSize)
+                {
+                    int read = await stream.ReadAsync(chunkBytes, bytesRead, bufferSize - bytesRead);
+                    if (read == 0) break;
+                    bytesRead += read;
+                }
+
+                Console.WriteLine($"[Extract] Successfully sliced {bytesRead / 1024 / 1024.0:F2} MB of ROM.");
+
+                await UpdateProgress(current_step++, "Extracting banner (banner.bin) via ndstool.wasm...");
+
+                bannerBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.extractBanner", file.Name, chunkBytes);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] Failed to load rom file: {ex.Message}");
+                bannerBytes = null;
+
+                return;
+            }
 
             if (bannerBytes == null || bannerBytes.Length == 0)
             {
@@ -117,15 +189,57 @@
                 return;
             }
 
-            await DownloadBytes("extracted_banner.bin", bannerBytes);
+            await ProcessRomFile();
+        }
+    }
 
-            SetStatus("3/6: Downloading base files (arm7, arm9) and building bootloader.nds...");
+    private async Task LoadCustomIcon(InputFileChangeEventArgs e)
+    {
+        current_step = 1;
+        TOTAL_STEPS = 6;
+        SetStatus("Loaded BMP file into browser memory.");
+        current_step++;
+        var iconFile = e.File;
+        if (iconFile != null)
+        {
+            try
+            {
+                using var stream = iconFile.OpenReadStream(maxAllowedSize: 10240); 
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+
+                customIconBytes = ms.ToArray();
+                Console.WriteLine($"[Custom Mode] Loaded custom icon: {customIconBytes.Length} bytes");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] Failed to load custom icon: {ex.Message}");
+                customIconBytes = null;
+
+                return;
+            }
+        }
+    }
+
+    private async Task ProcessRomFile()
+    {
+        try
+        {
+            byte[]? bootloaderBytes = null;
+
+            //SetStatus("3/6: Downloading base files (arm7, arm9) and building bootloader.nds...");
+            await UpdateProgress(current_step++, "Downloading base files (arm7, arm9) and building bootloader.nds...");
             byte[] arm7Bytes = await Http.GetByteArrayAsync(ARM7_ELF_URL);
             byte[] arm9Bytes = await Http.GetByteArrayAsync(ARM9_ELF_URL);
-            byte[] bootloaderBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.buildBootloader", bannerBytes, arm7Bytes, arm9Bytes);
-            await DownloadBytes("bootloader_raw.nds", bootloaderBytes);
+            if(patchMode == "extract")
+                bootloaderBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.buildBootloader", bannerBytes, arm7Bytes, arm9Bytes);
+            if(patchMode == "custom")
+                bootloaderBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.buildBootloaderFromIcon", customTitle, customSubtitle, customAuthor, customIconBytes, arm7Bytes, arm9Bytes);
+            //await DownloadBytes("bootloader_raw.nds", bootloaderBytes);
+            
 
-            SetStatus("4/6: Downloading DSpico.dldi and applying DLDI patch...");
+            //SetStatus("4/6: Downloading DSpico.dldi and applying DLDI patch...");
+            await UpdateProgress(current_step++, "Downloading DSpico.dldi and applying DLDI patch...");
             byte[] dldiBytes = await Http.GetByteArrayAsync(DSPICO_DLDI_URL);
             byte[] dldiPatchedBootloaderBytes = await JS.InvokeAsync<byte[]>(
                 "DldiBridge.applyPatch", 
@@ -133,15 +247,17 @@
                 bootloaderBytes
             );
 
-            SetStatus("5/6: Encrypting final default.nds via DSRomEncryptor...");
+            //SetStatus("5/6: Encrypting final default.nds via DSRomEncryptor...");
+            await UpdateProgress(current_step++, "Encrypting final default.nds via DSRomEncryptor...");
             byte[] ntrKey = await Http.GetByteArrayAsync(NTR_BLOWFISH_URL);
             byte[] twlKey = await Http.GetByteArrayAsync(TWL_BLOWFISH_URL);
 
             byte[] defaultNdsBytes = RomEncryptorService.EncryptRom(dldiPatchedBootloaderBytes, ntrKey, twlKey);
 
-            await DownloadBytes("default_final.nds", defaultNdsBytes);
+            //await DownloadBytes("default_final.nds", defaultNdsBytes);
 
-            SetStatus($"6/6: Patching firmware... (Generated NDS size: {defaultNdsBytes.Length} bytes)");
+            //SetStatus($"6/6: Patching firmware... (Generated NDS size: {defaultNdsBytes.Length} bytes)");
+            await UpdateProgress(current_step++, $"Patching firmware... (Generated NDS size: {defaultNdsBytes.Length} bytes)");
             string targetUf2Url = (defaultNdsBytes.Length <= 82432) ? FIRMWARE_1_URL : FIRMWARE_2_URL;
             byte[] baseFirmwareBytes = await Http.GetByteArrayAsync(targetUf2Url);
 
@@ -152,7 +268,8 @@
             uf2Patcher.PatchDefault(defaultNdsBytes); 
             var patchedFirmware = uf2Reader.ToBuffer();
 
-            SetStatus("Done! Starting download of the patched firmware.");
+            //SetStatus("Done! Starting download of the patched firmware.");
+            await UpdateProgress(current_step++, "Done! Starting download of the patched firmware.");
             await JS.InvokeVoidAsync(
                 "downloadFileFromBytes",
                 "DSpico_custom.uf2",
@@ -177,5 +294,15 @@
     {
         if (data == null || data.Length == 0) return;
         await JS.InvokeVoidAsync("downloadFileFromBytes", fileName, "application/octet-stream", data);
+    }
+
+    private async Task UpdateProgress(int step, string newStatus)
+    {
+        status = $"{step}/{TOTAL_STEPS} : "+newStatus;
+        progressPercent = (int)((double)step / TOTAL_STEPS * 100);
+        
+        StateHasChanged();
+
+        await Task.Delay(10); 
     }
 }

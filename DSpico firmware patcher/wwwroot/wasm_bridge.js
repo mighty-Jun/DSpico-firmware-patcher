@@ -43,6 +43,27 @@ window.NdsToolBridge = {
             console.error("[ndstool] bootloader building failed:", error);
             return null;
         }
+    },
+
+    buildBootloaderFromIcon: async function (title, subtitle, author, iconBytes, arm7Bytes, arm9Bytes) {
+        const engine = await this.initNdstool();
+        try {
+            engine.FS.writeFile('icon.bmp', new Uint8Array(iconBytes));
+            engine.FS.writeFile('arm7.elf', new Uint8Array(arm7Bytes));
+            engine.FS.writeFile('arm9.elf', new Uint8Array(arm9Bytes));
+
+            fullTitle = [title, subtitle, author].filter(item => item !== "").join(';');
+            
+            engine.callMain(['-c', 'bootloader.nds', '-9', 'arm9.elf', '-7', 'arm7.elf', '-b', 'icon.bmp', fullTitle, '-n', '1623', '1', '-n', '2296', '24', '-g', 'DSPI']);
+            //-n 1623 1 -n1 2296 24 -g DSPI
+            let bootloaderData = engine.FS.readFile('bootloader.nds');
+            console.log(`[ndstool] bootloader built! (${bootloaderData.length} bytes)`);
+
+            return bootloaderData;
+        } catch (error) {
+            console.error("[ndstool] bootloader building failed:", error);
+            return null;
+        }
     }
 };
 
