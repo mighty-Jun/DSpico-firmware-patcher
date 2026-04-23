@@ -161,7 +161,7 @@
             try
             {
                 using var stream = file.OpenReadStream(1024L * 1024L * 1024L);
-                int chunkSize = 4 * 1024 * 1024;
+                int chunkSize = 16 * 1024 * 1024;
                 int bufferSize = (int)Math.Min(chunkSize, file.Size);
                 byte[] chunkBytes = new byte[bufferSize];
 
