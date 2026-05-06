@@ -237,10 +237,13 @@
             byte[] arm9Bytes = await Http.GetByteArrayAsync(ARM9_ELF_URL);
             if(patchMode == "extract")
                 bootloaderBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.buildBootloader", bannerBytes, arm7Bytes, arm9Bytes);
-            if(patchMode == "custom")
+            else //if(patchMode == "custom")
                 bootloaderBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.buildBootloaderFromIcon", customTitle, customSubtitle, customAuthor, customIconBytes, arm7Bytes, arm9Bytes);
             //await DownloadBytes("bootloader_raw.nds", bootloaderBytes);
-            
+            if (bootloaderBytes.Length < 84480)
+            {
+                throw new Exception("Failed to generate bootloader.nds.");
+            }
 
             //SetStatus("4/6: Downloading DSpico.dldi and applying DLDI patch...");
             await UpdateProgress(current_step++, "Downloading DSpico.dldi and applying DLDI patch...");
@@ -262,8 +265,8 @@
 
             //SetStatus($"6/6: Patching firmware... (Generated NDS size: {defaultNdsBytes.Length} bytes)");
             await UpdateProgress(current_step++, $"Patching firmware... (Generated NDS size: {defaultNdsBytes.Length} bytes)");
-            string targetUf2Url = (defaultNdsBytes.Length <= 82432) ? FIRMWARE_1_URL : FIRMWARE_2_URL;
-            byte[] baseFirmwareBytes = await Http.GetByteArrayAsync(targetUf2Url);
+            
+            byte[] baseFirmwareBytes = await Http.GetByteArrayAsync(FIRMWARE_2_URL);
 
             var uf2Reader = new UF2Reader();
             uf2Reader.ReadFromBuffer(baseFirmwareBytes);
