@@ -240,7 +240,7 @@
             else //if(patchMode == "custom")
                 bootloaderBytes = await JS.InvokeAsync<byte[]>("NdsToolBridge.buildBootloaderFromIcon", customTitle, customSubtitle, customAuthor, customIconBytes, arm7Bytes, arm9Bytes);
             //await DownloadBytes("bootloader_raw.nds", bootloaderBytes);
-            if (bootloaderBytes.Length < 84480)
+            if (bootloaderBytes.Length < 82432)
             {
                 throw new Exception("Failed to generate bootloader.nds.");
             }
